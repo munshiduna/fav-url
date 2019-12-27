@@ -11,7 +11,7 @@ const Url = mongoose.model("Url", new mongoose.Schema({
 		collation: { locale: 'en', strength: 2 },
 	},
 	title: {
-		type: mongoose.Schema.Types.String,
+		type: mongoose.Schema.Types.Mixed,
 		required: true,
 	},
 }) );
@@ -25,23 +25,77 @@ const typeDefs = gql`
 		url: String!
 		title: String!
 	}
+	type Status {
+		error: Boolean!
+		message: String!
+		data: Url
+	}
+	type UpdatedField {
+		id: String!
+		field: String!
+		value: String
+	}
 	type Mutation {
-		createUrl(url: String!, title: String!): Url
+		createUrl(url: String!, title: String!): Status!
+		deteleUrl(urlId: String!): Status!
+		updateUrl(urlId: String!, field: String!, value: String): Status!
 	}
 	type Subscription {
 		urlCreated: Url
+		urlRemoved: Url
+		urlUpdated: UpdatedField
 	}
 `;
 
 const resolvers = {
 
 	Query: { urls: () => Url.find(), },
+	Url: {
+		url: ( url ) => url.url || "",
+		title: ( url ) => url.title || "",
+	},
 	Mutation: {
-		createUrl: async (_, { url, title }, { pubsub }) => {
-			const newUrl = new Url({ url, title });
-			await newUrl.save();
-			pubsub.publish("urlCreated", newUrl)
-			return newUrl;
+		createUrl: async (_, { url, title }, { pubSub }) => {
+
+			try {
+
+				const newUrl = new Url({ url, title });
+				const saveUrl = await newUrl.save();
+
+				pubSub.publish("urlCreated", saveUrl);
+
+				return { error: false, message: "OK", data: saveUrl };
+
+			} catch( error ) {
+
+				return { error: true, message: error.errmsg, data: null };
+			}
+		},
+		deteleUrl: async (_, { urlId }, { pubSub }) => {
+			
+			try {
+
+				const removeUrl = await Url.findOneAndDelete({ _id: urlId });
+
+				pubSub.publish("urlRemoved", removeUrl);
+
+				return { error: false, message: "OK", data: removeUrl };
+
+			} catch( error ) {
+
+				return { error: true, message: error.message, data: null };
+			}
+		},
+		updateUrl: async (_, { urlId, field, value }, { pubSub }) => {
+
+			const updateUrl = await Url.findOneAndUpdate(
+				{ _id: urlId },
+				{ [field]: value }
+			);
+
+			pubSub.publish("urlUpdated", { id: urlId, field, value });
+
+			return { error: false, message: "OK", data: updateUrl };
 		},
 	},
 	Subscription: {
@@ -50,20 +104,36 @@ const resolvers = {
 				payload.title = '#' + payload.title;
 				return payload;
 			},
-			subscribe: (parent, args, { pubsub }) => pubsub.asyncIterator("urlCreated")
-		}
+			subscribe: (parent, args, { pubSub }) => pubSub.asyncIterator("urlCreated")
+		},
+		urlRemoved: {
+			resolve: (payload) => {
+				return payload;
+			},
+			subscribe: (parent, args, { pubSub }) => pubSub.asyncIterator("urlRemoved")
+		},
+		urlUpdated: {
+			resolve: (payload) => {
+
+				console.log( payload );
+
+				return payload;
+			},
+			subscribe: (parent, args, { pubSub }) => pubSub.asyncIterator("urlUpdated")
+		},
 	},
 };
 
 async function main () {
 
-	const pubsub = new PubSub()
-	const server = new ApolloServer({ typeDefs, resolvers, context: { pubsub } });
+	const pubSub = new PubSub()
+	const server = new ApolloServer({ typeDefs, resolvers, context: { pubSub } });
 
 	await mongoose.connect("mongodb://localhost:27017/favurl", {
 		useCreateIndex: true,
 		useNewUrlParser: true,
 		useUnifiedTopology: true,
+		useFindAndModify: true,
 	});
 
 	server.listen().then(({ url }) => {
